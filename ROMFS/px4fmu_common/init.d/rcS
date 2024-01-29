@@ -597,3 +597,12 @@ unset VEHICLE_TYPE
 # Boot is complete, inform MAVLink app(s) that the system is now fully up and running.
 #
 mavlink boot_complete
+
+# esc instance 1
+ina228 start -X -a 0x41
+# px4 instance 2
+ina228 start -X -a 0x40
+# px4 instance 3
+ina228 start -X -a 0x44
+# servo instance 4
+ina228 start -X -a 0x43
