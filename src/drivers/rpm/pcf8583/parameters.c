@@ -43,7 +43,7 @@
 * @value 0 Disabled
 * @value 1 Eneabled
 */
-PARAM_DEFINE_INT32(SENS_EN_PCF8583, 0);
+PARAM_DEFINE_INT32(SENS_EN_PCF8583, 1);
 
 
 /**
