@@ -16,6 +16,9 @@
 Testing/
 Packages/*
 build/*
+!build/px4_fmu-v6c_default/
+build/px4_fmu-v6c_default/*
+!build/px4_fmu-v6c_default/px4_fmu-v6c_default.px4
 build_*/
 cscope.out
 cscope.in.out
