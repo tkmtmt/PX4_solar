@@ -58,112 +58,59 @@ private:
 
 	uORB::SubscriptionMultiArray<battery_status_s, battery_status_s::MAX_INSTANCES> _battery_status_subs{ORB_ID::battery_status};
 
+	// tomita
 	bool send() override
 	{
 		bool updated = false;
+		if (_battery_status_subs.updated())
+		{
+			battery_status_s battery_status[battery_status_s::MAX_INSTANCES] {};
+			// bat_msg.battery_remaining = 99.0f;
+			for (int i = 0; i < _battery_status_subs.size(); i++)
+			{
+				_battery_status_subs[i].copy(&battery_status[i]);
+			}
+			int lowest_battery_index = 0;
+			const battery_status_s &lowest_battery = battery_status[lowest_battery_index];
 
-		for (auto &battery_sub : _battery_status_subs) {
-			battery_status_s battery_status;
+			mavlink_battery_status_t bat_msg{};
+			bat_msg.id = 0;
+			bat_msg.battery_function = MAV_BATTERY_FUNCTION_ALL;
+			bat_msg.type = MAV_BATTERY_TYPE_LIPO;
+			bat_msg.energy_consumed = -1;
+			bat_msg.fault_bitmask = lowest_battery.faults;
+			bat_msg.time_remaining = 0;
+			bat_msg.temperature = INT16_MAX;
 
-			if (battery_sub.update(&battery_status)) {
-				/* battery status message with higher resolution */
-				mavlink_battery_status_t bat_msg{};
-				// TODO: Determine how to better map between battery ID within the firmware and in MAVLink
-				bat_msg.id = battery_status.id - 1;
-				bat_msg.battery_function = MAV_BATTERY_FUNCTION_ALL;
-				bat_msg.type = MAV_BATTERY_TYPE_LIPO;
-				bat_msg.current_consumed = (battery_status.connected) ? battery_status.discharged_mah : -1;
-				bat_msg.energy_consumed = -1;
-				bat_msg.current_battery = (battery_status.connected) ? battery_status.current_filtered_a * 100 : -1;
-				bat_msg.battery_remaining = (battery_status.connected) ? roundf(battery_status.remaining * 100.f) : -1;
-				// MAVLink extension: 0 is unsupported, in uORB it's NAN
-				bat_msg.time_remaining = (battery_status.connected && (PX4_ISFINITE(battery_status.time_remaining_s))) ?
-							 math::max((int)battery_status.time_remaining_s, 1) : 0;
-
-				switch (battery_status.warning) {
-				case (battery_status_s::BATTERY_WARNING_NONE):
-					bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_OK;
-					break;
-
-				case (battery_status_s::BATTERY_WARNING_LOW):
-					bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_LOW;
-					break;
-
-				case (battery_status_s::BATTERY_WARNING_CRITICAL):
-					bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_CRITICAL;
-					break;
-
-				case (battery_status_s::BATTERY_WARNING_EMERGENCY):
-					bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_EMERGENCY;
-					break;
-
-				case (battery_status_s::BATTERY_WARNING_FAILED):
-					bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_FAILED;
-					break;
-
-				case (battery_status_s::BATTERY_STATE_UNHEALTHY):
-					bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_UNHEALTHY;
-					break;
-
-				case (battery_status_s::BATTERY_STATE_CHARGING):
-					bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_CHARGING;
-					break;
-
-				default:
-					bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_UNDEFINED;
-					break;
-				}
-
-				switch (battery_status.mode) {
-				case (battery_status_s::BATTERY_MODE_AUTO_DISCHARGING):
-					bat_msg.mode = MAV_BATTERY_MODE_AUTO_DISCHARGING;
-					break;
-
-				case (battery_status_s::BATTERY_MODE_HOT_SWAP):
-					bat_msg.mode = MAV_BATTERY_MODE_HOT_SWAP;
-					break;
-
-				default:
-					bat_msg.mode = MAV_BATTERY_MODE_UNKNOWN;
-					break;
-				}
-
-				bat_msg.fault_bitmask = battery_status.faults;
-
-				// check if temperature valid
-				if (battery_status.connected && PX4_ISFINITE(battery_status.temperature)) {
-					bat_msg.temperature = battery_status.temperature * 100.f;
-
-				} else {
-					bat_msg.temperature = INT16_MAX;
-				}
-
-				// fill cell voltages
+			if (lowest_battery.connected)
+			{
+				/* fill cell voltages */
 				static constexpr int mavlink_cell_slots = (sizeof(bat_msg.voltages) / sizeof(bat_msg.voltages[0]));
 				static constexpr int mavlink_cell_slots_extension
 					= (sizeof(bat_msg.voltages_ext) / sizeof(bat_msg.voltages_ext[0]));
 				uint16_t cell_voltages[mavlink_cell_slots + mavlink_cell_slots_extension];
 
-				for (auto &voltage : cell_voltages) {
+				for (auto &voltage : cell_voltages)
+				{
 					voltage = UINT16_MAX;
 				}
 
-				if (battery_status.connected) {
-					// We don't know the cell count or we don't know the indpendent cell voltages so we report the total voltage in the first cell
-					if (battery_status.cell_count == 0 || battery_status.voltage_cell_v[0] < 0.0001f) {
-						cell_voltages[0] = battery_status.voltage_filtered_v * 1000.f;
+				/* read cell voltage */
+				if (lowest_battery.cell_count == 0 || lowest_battery.voltage_cell_v[0] < 0.0001f)
+				{
+					cell_voltages[0] = lowest_battery.voltage_filtered_v * 1000.f;
+				}
+				else
+				{
+					static constexpr int uorb_cell_slots =
+						(sizeof(lowest_battery.voltage_cell_v) / sizeof(lowest_battery.voltage_cell_v[0]));
 
-					} else {
-						static constexpr int uorb_cell_slots =
-							(sizeof(battery_status.voltage_cell_v) / sizeof(battery_status.voltage_cell_v[0]));
+					const int cell_slots = math::min(static_cast<int>(lowest_battery.cell_count),
+										uorb_cell_slots,
+										mavlink_cell_slots + mavlink_cell_slots_extension);
 
-						const int cell_slots = math::min(static_cast<int>(battery_status.cell_count),
-										 uorb_cell_slots,
-										 mavlink_cell_slots + mavlink_cell_slots_extension);
-
-						for (int cell = 0; cell < cell_slots; cell++) {
-							cell_voltages[cell] = battery_status.voltage_cell_v[cell] * 1000.f;
-						}
+					for (int cell = 0; cell < cell_slots; cell++) {
+						cell_voltages[cell] = lowest_battery.voltage_cell_v[cell] * 1000.f;
 					}
 				}
 
@@ -177,13 +124,204 @@ private:
 					bat_msg.voltages_ext[cell] = cell_voltages[mavlink_cell_slots + cell];
 				}
 
-				mavlink_msg_battery_status_send_struct(_mavlink->get_channel(), &bat_msg);
-				updated = true;
+				// bat_msg.voltages[0] = lowest_battery.voltage_filtered_v * 1000.0f;
+				bat_msg.current_battery = lowest_battery.current_filtered_a * 100.0f;
+				bat_msg.battery_remaining = ceilf(lowest_battery.remaining * 100.0f);
+				bat_msg.current_consumed = lowest_battery.discharged_mah;
 			}
-		}
+			else
+			{
+				// bat_msg.voltages[0] = UINT16_MAX;
+				bat_msg.current_battery = -1;
+				bat_msg.battery_remaining = -1;
+				bat_msg.current_consumed = -1;
+			}
 
+			/* warning */
+			switch (lowest_battery.warning) {
+			case (battery_status_s::BATTERY_WARNING_NONE):
+				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_OK;
+				break;
+
+			case (battery_status_s::BATTERY_WARNING_LOW):
+				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_LOW;
+				break;
+
+			case (battery_status_s::BATTERY_WARNING_CRITICAL):
+				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_CRITICAL;
+				break;
+
+			case (battery_status_s::BATTERY_WARNING_EMERGENCY):
+				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_EMERGENCY;
+				break;
+
+			case (battery_status_s::BATTERY_WARNING_FAILED):
+				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_FAILED;
+				break;
+
+			case (battery_status_s::BATTERY_STATE_UNHEALTHY):
+				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_UNHEALTHY;
+				break;
+
+			case (battery_status_s::BATTERY_STATE_CHARGING):
+				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_CHARGING;
+				break;
+
+			default:
+				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_UNDEFINED;
+				break;
+			}
+
+			/* mode */
+			switch (lowest_battery.mode) {
+			case (battery_status_s::BATTERY_MODE_AUTO_DISCHARGING):
+				bat_msg.mode = MAV_BATTERY_MODE_AUTO_DISCHARGING;
+				break;
+
+			case (battery_status_s::BATTERY_MODE_HOT_SWAP):
+				bat_msg.mode = MAV_BATTERY_MODE_HOT_SWAP;
+				break;
+
+			default:
+				bat_msg.mode = MAV_BATTERY_MODE_UNKNOWN;
+				break;
+			}
+
+			mavlink_msg_battery_status_send_struct(_mavlink->get_channel(), &bat_msg);
+			updated = true;
+		}
 		return updated;
 	}
+	// ここまで
+
+
+	// bool send() override
+	// {
+	// 	bool updated = false;
+
+	// 	for (auto &battery_sub : _battery_status_subs) {
+	// 		battery_status_s battery_status;
+
+	// 		if (battery_sub.update(&battery_status)) {
+	// 			/* battery status message with higher resolution */
+	// 			mavlink_battery_status_t bat_msg{};
+	// 			// TODO: Determine how to better map between battery ID within the firmware and in MAVLink
+	// 			bat_msg.id = battery_status.id - 1;
+	// 			bat_msg.battery_function = MAV_BATTERY_FUNCTION_ALL;
+	// 			bat_msg.type = MAV_BATTERY_TYPE_LIPO;
+	// 			bat_msg.current_consumed = (battery_status.connected) ? battery_status.discharged_mah : -1;
+	// 			bat_msg.energy_consumed = -1;
+	// 			bat_msg.current_battery = (battery_status.connected) ? battery_status.current_filtered_a * 100 : -1;
+	// 			bat_msg.battery_remaining = (battery_status.connected) ? roundf(battery_status.remaining * 100.f) : -1;
+	// 			// MAVLink extension: 0 is unsupported, in uORB it's NAN
+	// 			bat_msg.time_remaining = (battery_status.connected && (PX4_ISFINITE(battery_status.time_remaining_s))) ?
+	// 						 math::max((int)battery_status.time_remaining_s, 1) : 0;
+
+	// 			switch (battery_status.warning) {
+	// 			case (battery_status_s::BATTERY_WARNING_NONE):
+	// 				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_OK;
+	// 				break;
+
+	// 			case (battery_status_s::BATTERY_WARNING_LOW):
+	// 				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_LOW;
+	// 				break;
+
+	// 			case (battery_status_s::BATTERY_WARNING_CRITICAL):
+	// 				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_CRITICAL;
+	// 				break;
+
+	// 			case (battery_status_s::BATTERY_WARNING_EMERGENCY):
+	// 				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_EMERGENCY;
+	// 				break;
+
+	// 			case (battery_status_s::BATTERY_WARNING_FAILED):
+	// 				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_FAILED;
+	// 				break;
+
+	// 			case (battery_status_s::BATTERY_STATE_UNHEALTHY):
+	// 				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_UNHEALTHY;
+	// 				break;
+
+	// 			case (battery_status_s::BATTERY_STATE_CHARGING):
+	// 				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_CHARGING;
+	// 				break;
+
+	// 			default:
+	// 				bat_msg.charge_state = MAV_BATTERY_CHARGE_STATE_UNDEFINED;
+	// 				break;
+	// 			}
+
+	// 			switch (battery_status.mode) {
+	// 			case (battery_status_s::BATTERY_MODE_AUTO_DISCHARGING):
+	// 				bat_msg.mode = MAV_BATTERY_MODE_AUTO_DISCHARGING;
+	// 				break;
+
+	// 			case (battery_status_s::BATTERY_MODE_HOT_SWAP):
+	// 				bat_msg.mode = MAV_BATTERY_MODE_HOT_SWAP;
+	// 				break;
+
+	// 			default:
+	// 				bat_msg.mode = MAV_BATTERY_MODE_UNKNOWN;
+	// 				break;
+	// 			}
+
+	// 			bat_msg.fault_bitmask = battery_status.faults;
+
+	// 			// check if temperature valid
+	// 			if (battery_status.connected && PX4_ISFINITE(battery_status.temperature)) {
+	// 				bat_msg.temperature = battery_status.temperature * 100.f;
+
+	// 			} else {
+	// 				bat_msg.temperature = INT16_MAX;
+	// 			}
+
+	// 			// fill cell voltages
+	// 			static constexpr int mavlink_cell_slots = (sizeof(bat_msg.voltages) / sizeof(bat_msg.voltages[0]));
+	// 			static constexpr int mavlink_cell_slots_extension
+	// 				= (sizeof(bat_msg.voltages_ext) / sizeof(bat_msg.voltages_ext[0]));
+	// 			uint16_t cell_voltages[mavlink_cell_slots + mavlink_cell_slots_extension];
+
+	// 			for (auto &voltage : cell_voltages) {
+	// 				voltage = UINT16_MAX;
+	// 			}
+
+	// 			if (battery_status.connected) {
+	// 				// We don't know the cell count or we don't know the indpendent cell voltages so we report the total voltage in the first cell
+	// 				if (battery_status.cell_count == 0 || battery_status.voltage_cell_v[0] < 0.0001f) {
+	// 					cell_voltages[0] = battery_status.voltage_filtered_v * 1000.f;
+
+	// 				} else {
+	// 					static constexpr int uorb_cell_slots =
+	// 						(sizeof(battery_status.voltage_cell_v) / sizeof(battery_status.voltage_cell_v[0]));
+
+	// 					const int cell_slots = math::min(static_cast<int>(battery_status.cell_count),
+	// 									 uorb_cell_slots,
+	// 									 mavlink_cell_slots + mavlink_cell_slots_extension);
+
+	// 					for (int cell = 0; cell < cell_slots; cell++) {
+	// 						cell_voltages[cell] = battery_status.voltage_cell_v[cell] * 1000.f;
+	// 					}
+	// 				}
+	// 			}
+
+	// 			// voltage fields 1-10
+	// 			for (int cell = 0; cell < mavlink_cell_slots; cell++) {
+	// 				bat_msg.voltages[cell] = cell_voltages[cell];
+	// 			}
+
+	// 			// voltage fields 11-14 into the extension
+	// 			for (int cell = 0; cell < mavlink_cell_slots_extension; cell++) {
+	// 				bat_msg.voltages_ext[cell] = cell_voltages[mavlink_cell_slots + cell];
+	// 			}
+
+	// 			mavlink_msg_battery_status_send_struct(_mavlink->get_channel(), &bat_msg);
+	// 			updated = true;
+	// 		}
+	// 	}
+
+	// 	return updated;
+	// }
+
 };
 
 #endif // BATTERY_STATUS_HPP
